@@ -75,12 +75,6 @@ support_value = "@destroystoretp"
 SUPPORT_USERNAME = (
     support_value if support_value.startswith("@") else f"@{support_value}"
 )
-channel_value = "@destroystoretgk"
-REQUIRED_CHANNEL = (
-    channel_value if channel_value.startswith("@") else f"@{channel_value}"
-)
-REQUIRED_CHANNEL_URL = f"https://t.me/{REQUIRED_CHANNEL.lstrip('@')}"
-REQUIRE_CHANNEL_SUBSCRIPTION = True
 lead_monitor_value = os.getenv("LEAD_MONITOR_CHAT", "@FunPayPlace").strip()
 lead_monitor_name = re.sub(
     r"^(?:https?://)?t\.me/", "", lead_monitor_value, flags=re.IGNORECASE
@@ -194,8 +188,6 @@ if not re.fullmatch(r"@[A-Za-z0-9_]{5,32}", SUPPORT_USERNAME):
     raise RuntimeError("Invalid SUPPORT_USERNAME")
 if not re.fullmatch(r"@[A-Za-z0-9_]{5,32}", OWNER_USERNAME):
     raise RuntimeError("Invalid OWNER_USERNAME")
-if not re.fullmatch(r"@[A-Za-z0-9_]{5,32}", REQUIRED_CHANNEL):
-    raise RuntimeError("Invalid REQUIRED_CHANNEL")
 if not re.fullmatch(r"[A-Za-z0-9_-]{48}", TON_WALLET):
     raise RuntimeError("Invalid TON_WALLET_ADDRESS")
 if not re.fullmatch(r"T[1-9A-HJ-NP-Za-km-z]{33}", TRC20_WALLET):
@@ -5145,9 +5137,6 @@ DB = Database(DATABASE_PATH)
 MARKET = MarketService()
 VERIFIER = PaymentVerifier()
 BOT = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML", threaded=True, num_threads=8)
-SUBSCRIPTION_CACHE_TTL = 300
-SUBSCRIPTION_CACHE: dict[int, tuple[float, bool]] = {}
-SUBSCRIPTION_LOCK = threading.Lock()
 VERIFICATION_NOTICES: dict[tuple[str, int, str], tuple[str, str]] = {}
 
 
@@ -5335,76 +5324,6 @@ def support_keyboard(lang: str) -> types.InlineKeyboardMarkup:
         types.InlineKeyboardButton(text(lang, "back"), callback_data="nav:home")
     )
     return keyboard
-
-
-def subscription_keyboard(lang: str) -> types.InlineKeyboardMarkup:
-    keyboard = types.InlineKeyboardMarkup()
-    keyboard.add(
-        types.InlineKeyboardButton(
-            text(lang, "subscribe_open"),
-            url=REQUIRED_CHANNEL_URL,
-        )
-    )
-    keyboard.add(
-        types.InlineKeyboardButton(
-            text(lang, "subscribe_check"),
-            callback_data="sub:check",
-        )
-    )
-    return keyboard
-
-
-def subscription_status(user_id: int, force: bool = False) -> bool | None:
-    if not REQUIRE_CHANNEL_SUBSCRIPTION:
-        return True
-    if is_admin_user_id(user_id):
-        return True
-    now = time.monotonic()
-    with SUBSCRIPTION_LOCK:
-        cached = SUBSCRIPTION_CACHE.get(user_id)
-        if not force and cached and now - cached[0] < SUBSCRIPTION_CACHE_TTL:
-            return cached[1]
-    try:
-        member = BOT.get_chat_member(REQUIRED_CHANNEL, user_id)
-        status = str(member.status)
-        joined = status in {"creator", "administrator", "member"} or (
-            status == "restricted" and bool(getattr(member, "is_member", False))
-        )
-    except Exception as exc:
-        LOGGER.warning(
-            "Subscription check failed for %s in %s: %s",
-            user_id,
-            REQUIRED_CHANNEL,
-            exc,
-        )
-        return None
-    with SUBSCRIPTION_LOCK:
-        SUBSCRIPTION_CACHE[user_id] = (now, joined)
-    return joined
-
-
-def send_subscription_prompt(chat_id: int, lang: str, error: bool = False) -> None:
-    key = "subscribe_error" if error else "subscribe_title"
-    send_visual(
-        chat_id,
-        "subscription",
-        text(
-            lang,
-            key,
-            channel=html.escape(REQUIRED_CHANNEL),
-        ),
-        reply_markup=subscription_keyboard(lang),
-    )
-
-
-def require_subscription(chat_id: int, lang: str, force: bool = False) -> bool:
-    if not REQUIRE_CHANNEL_SUBSCRIPTION:
-        return True
-    status = subscription_status(chat_id, force=force)
-    if status is True:
-        return True
-    send_subscription_prompt(chat_id, lang, error=status is None)
-    return False
 
 
 def cryptobot_keyboard(lang: str) -> types.InlineKeyboardMarkup:
@@ -6167,8 +6086,6 @@ def start(message: types.Message) -> None:
     if not DB.currency(message.chat.id):
         send_currency(message.chat.id)
         return
-    if not require_subscription(message.chat.id, language_of(message.chat.id)):
-        return
     if promo_payload:
         lang = language_of(message.chat.id)
         status, discount, code = DB.activate_promo(
@@ -6235,8 +6152,6 @@ def about_command(message: types.Message) -> None:
         send_language(message.chat.id)
         return
     lang = language_of(message.chat.id)
-    if not require_subscription(message.chat.id, lang):
-        return
     send_visual(
         message.chat.id,
         "about",
@@ -6256,8 +6171,6 @@ def admin(message: types.Message) -> None:
     DB.ensure_user(message.from_user)
     DB.clear_state(message.chat.id)
     lang = language_of(message.chat.id)
-    if not require_subscription(message.chat.id, lang):
-        return
     if not is_admin_user(message.from_user):
         BOT.send_message(
             message.chat.id, text(lang, "access_denied")
@@ -6295,28 +6208,7 @@ def callbacks(call: types.CallbackQuery) -> None:
                     currency=currency_label(selected),
                 ),
             )
-            if require_subscription(call.from_user.id, lang):
-                send_home(call.from_user.id)
-            return
-
-        if data == "sub:check":
-            if not DB.language(call.from_user.id):
-                send_language(call.from_user.id)
-                return
-            if not DB.currency(call.from_user.id):
-                send_currency(call.from_user.id)
-                return
-            status = subscription_status(call.from_user.id, force=True)
-            if status is True:
-                callback_answer(call, text(lang, "subscribe_ok"))
-                BOT.send_message(call.from_user.id, text(lang, "subscribe_ok"))
-                send_home(call.from_user.id)
-            elif status is False:
-                callback_answer(call, text(lang, "subscribe_missing"), True)
-                send_subscription_prompt(call.from_user.id, lang)
-            else:
-                callback_answer(call, text(lang, "subscribe_error"), True)
-                send_subscription_prompt(call.from_user.id, lang, error=True)
+            send_home(call.from_user.id)
             return
 
         if not DB.language(call.from_user.id):
@@ -6326,9 +6218,6 @@ def callbacks(call: types.CallbackQuery) -> None:
             send_currency(call.from_user.id)
             return
 
-        if not require_subscription(call.from_user.id, lang):
-            callback_answer(call, text(lang, "subscribe_missing"), True)
-            return
         display_currency = currency_of(call.from_user.id)
 
         disabled_payment_prefixes = (
@@ -7483,8 +7372,6 @@ def state_handler(message: types.Message) -> None:
         send_currency(message.chat.id)
         return
     display_currency = currency_of(message.chat.id)
-    if not require_subscription(message.chat.id, lang):
-        return
     state_record = DB.state(message.chat.id)
     if not state_record:
         return
