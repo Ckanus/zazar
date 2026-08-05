@@ -41,6 +41,27 @@ from telebot.apihelper import ApiTelegramException
 
 load_dotenv()
 
+EMOJI_PATTERN = re.compile(
+    "["
+    "\U0001F1E6-\U0001F1FF"
+    "\U0001F300-\U0001FAFF"
+    "\u2190-\u21FF"
+    "\u2300-\u23FF"
+    "\u25A0-\u27BF"
+    "\u2B00-\u2BFF"
+    "]+"
+)
+
+
+def strip_emojis(value: Any) -> str:
+    """Remove emoji and decorative pictographs from visible interface text."""
+    return (
+        EMOJI_PATTERN.sub("", str(value))
+        .replace("\ufe0f", "")
+        .replace("\u200d", "")
+        .replace("\u20e3", "")
+    )
+
 SHOP_NAME = "Jouli Market"
 BOT_DISPLAY_NAME = "Jouli Market"
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
@@ -136,7 +157,7 @@ PRICE_MARKUP_PERCENT = Decimal(os.getenv("PRICE_MARKUP_PERCENT", "0"))
 CATALOG_PRICE_INCREASE_PERCENT = Decimal("10")
 PRICE_INCREASE_EXEMPT_CODES = {"stars", "pubg_uc", "steam"}
 CATALOG_PRICE_DECREASE_PERCENT = Decimal("4")
-MIN_TOPUP_RUB_KOPECKS = 50_000
+MIN_TOPUP_USD_CENTS = 1_000
 MIN_ORDER_USD_CENTS = 1_000
 MAX_TOPUP_CENTS = 1_000_000
 NANO_TON = Decimal(1_000_000_000)
@@ -232,7 +253,6 @@ FX_RATE_CACHE: tuple[float, dict[str, Decimal]] | None = None
 
 CURRENCY_OPTIONS = (
     ("usd", "🇺🇸 USD · $"),
-    ("rub", "🇷🇺 RUB · ₽"),
 )
 CURRENCIES = {code for code, _label in CURRENCY_OPTIONS}
 
@@ -276,13 +296,8 @@ def currency_rates(force: bool = False) -> dict[str, Decimal]:
 
 
 def minimum_topup_cents() -> int:
-    """Return the USD-cent equivalent of the 500 RUB minimum top-up."""
-    rub_rate = currency_rates()["rub"]
-    return int(
-        (Decimal(MIN_TOPUP_RUB_KOPECKS) / rub_rate).quantize(
-            Decimal("1"), rounding=ROUND_UP
-        )
-    )
+    """Return the fixed minimum top-up in USD cents."""
+    return MIN_TOPUP_USD_CENTS
 
 
 def normalize_promo_code(value: str) -> str:
@@ -290,11 +305,9 @@ def normalize_promo_code(value: str) -> str:
 
 LANGUAGE_OPTIONS = (
     ("ru", "🇷🇺 Русский"),
-    ("uk", "🇺🇦 Українська"),
-    ("en", "🇬🇧 English"),
 )
 LANGUAGES = {code for code, _label in LANGUAGE_OPTIONS}
-REMOVED_LANGUAGE_CODES = ("fa", "es", "pt", "de", "fr", "tr", "ar", "hi", "id", "zh", "ja")
+REMOVED_LANGUAGE_CODES = ("uk", "en", "fa", "es", "pt", "de", "fr", "tr", "ar", "hi", "id", "zh", "ja")
 
 TEXTS: dict[str, dict[str, str]] = {
     "ru": {
@@ -2052,7 +2065,7 @@ def text(lang: str, key: str, **values: Any) -> str:
         rendered = rendered.replace(
             "$10", format_usd_cents(minimum_topup_cents(), display_currency), 1
         )
-    return rendered
+    return strip_emojis(rendered)
 
 
 @dataclass(frozen=True, slots=True)
@@ -2991,13 +3004,17 @@ def miniapp_catalog_payload() -> dict[str, Any]:
         "shop": SHOP_NAME,
         "minimum_order_usd_cents": MIN_ORDER_USD_CENTS,
         "auto_close_minutes": ORDER_AUTO_CLOSE_MINUTES,
-        "categories": MINIAPP_CATEGORY_NAMES,
+        "categories": {
+            code: strip_emojis(name) for code, name in MINIAPP_CATEGORY_NAMES.items()
+        },
         "products": [
             {
                 "code": product.code,
-                "title": product.titles.get("ru", product.titles["en"]),
-                "title_en": product.titles["en"],
-                "emoji": product.emoji,
+                "title": strip_emojis(
+                    product.titles.get("ru", product.titles["en"])
+                ),
+                "title_en": strip_emojis(product.titles["en"]),
+                "emoji": "",
                 "category": product.category,
                 "price_label": product_price(product),
                 "minimum": minimum_quantity(product),
@@ -3427,9 +3444,7 @@ class Database:
         return dict(row) if row else None
 
     def language(self, user_id: int) -> str | None:
-        user = self.user(user_id)
-        value = str(user.get("language") or "") if user else ""
-        return value if value in LANGUAGES else None
+        return "ru"
 
     def set_language(self, user_id: int, language: str) -> None:
         if language not in LANGUAGES:
@@ -3441,9 +3456,7 @@ class Database:
             )
 
     def currency(self, user_id: int) -> str | None:
-        user = self.user(user_id)
-        value = str(user.get("currency") or "") if user else ""
-        return value if value in CURRENCIES else None
+        return "usd"
 
     def set_currency(self, user_id: int, currency: str) -> None:
         if currency not in CURRENCIES:
@@ -4017,24 +4030,14 @@ class Database:
             max(0, int(user.get("promo_discount_percent") or 0)) if user else 0
         )
         promo_code = str(user.get("promo_code") or "") if user else ""
-        giveaway_uses = int(user.get("giveaway_discount_uses") or 0) if user else 0
-        use_giveaway = (
-            giveaway_uses > 0
-            and GIVEAWAY_DISCOUNT_PERCENT
-            > max(regular_discount, promo_discount)
-        )
         use_promo = (
             bool(promo_code)
             and promo_discount > 0
             and promo_discount
-            >= max(
-                regular_discount,
-                GIVEAWAY_DISCOUNT_PERCENT if use_giveaway else 0,
-            )
+            >= regular_discount
         )
         discount = max(
             regular_discount,
-            GIVEAWAY_DISCOUNT_PERCENT if use_giveaway else 0,
             promo_discount if use_promo else 0,
         )
         total = (subtotal * (100 - discount) + 99) // 100
@@ -4063,13 +4066,6 @@ class Database:
                     now,
                 ),
             )
-            if use_giveaway:
-                db.execute(
-                    "UPDATE users SET giveaway_discount_uses = "
-                    "MAX(giveaway_discount_uses - 1, 0), updated_at = ? "
-                    "WHERE user_id = ?",
-                    (now_iso(), user_id),
-                )
             if use_promo:
                 db.execute(
                     "UPDATE users SET promo_code = NULL, "
@@ -5136,7 +5132,49 @@ def animated_banner(kind: str, product_code: str = "") -> io.BytesIO:
 DB = Database(DATABASE_PATH)
 MARKET = MarketService()
 VERIFIER = PaymentVerifier()
-BOT = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML", threaded=True, num_threads=8)
+
+
+def strip_markup_emojis(markup: Any) -> Any:
+    if markup is None:
+        return None
+    for row in getattr(markup, "keyboard", []) or []:
+        for button in row:
+            if hasattr(button, "text") and button.text is not None:
+                button.text = strip_emojis(button.text).strip() or "Открыть"
+    return markup
+
+
+class PlainTeleBot(telebot.TeleBot):
+    """Telegram client that removes emojis from every outgoing interface item."""
+
+    def send_message(self, chat_id: Any, text: Any, *args: Any, **kwargs: Any) -> Any:
+        kwargs["reply_markup"] = strip_markup_emojis(kwargs.get("reply_markup"))
+        return super().send_message(chat_id, strip_emojis(text), *args, **kwargs)
+
+    def send_photo(self, chat_id: Any, photo: Any, *args: Any, **kwargs: Any) -> Any:
+        if kwargs.get("caption") is not None:
+            kwargs["caption"] = strip_emojis(kwargs["caption"])
+        kwargs["reply_markup"] = strip_markup_emojis(kwargs.get("reply_markup"))
+        return super().send_photo(chat_id, photo, *args, **kwargs)
+
+    def send_animation(
+        self, chat_id: Any, animation: Any, *args: Any, **kwargs: Any
+    ) -> Any:
+        if kwargs.get("caption") is not None:
+            kwargs["caption"] = strip_emojis(kwargs["caption"])
+        kwargs["reply_markup"] = strip_markup_emojis(kwargs.get("reply_markup"))
+        return super().send_animation(chat_id, animation, *args, **kwargs)
+
+    def answer_callback_query(
+        self, callback_query_id: str, text: Any = None, *args: Any, **kwargs: Any
+    ) -> Any:
+        cleaned = strip_emojis(text) if text is not None else None
+        return super().answer_callback_query(
+            callback_query_id, cleaned, *args, **kwargs
+        )
+
+
+BOT = PlainTeleBot(BOT_TOKEN, parse_mode="HTML", threaded=True, num_threads=8)
 VERIFICATION_NOTICES: dict[tuple[str, int, str], tuple[str, str]] = {}
 
 
@@ -5188,38 +5226,15 @@ def send_visual(
     reply_markup: types.InlineKeyboardMarkup | None = None,
     product_code: str = "",
 ) -> Any:
-    try:
-        return BOT.send_animation(
-            chat_id,
-            animated_banner(kind, product_code),
-            caption=caption,
-            reply_markup=reply_markup,
-        )
-    except Exception as exc:
-        LOGGER.warning(
-            "Animation delivery failed for %s in chat %s: %s",
-            product_code or kind,
-            chat_id,
-            exc,
-        )
-    try:
-        photo = (
-            welcome_image()
-            if kind == "welcome" and not product_code
-            else red_banner(kind, product_code)
-        )
-    except Exception as exc:
-        LOGGER.warning("Visual generation failed for %s: %s", kind, exc)
-        return BOT.send_message(chat_id, caption, reply_markup=reply_markup)
-    return safe_send_photo(chat_id, photo, caption, reply_markup)
+    return BOT.send_message(chat_id, caption, reply_markup=reply_markup)
 
 
 def language_of(user_id: int) -> str:
-    return DB.language(user_id) or "en"
+    return "ru"
 
 
 def currency_of(user_id: int) -> str:
-    return DB.currency(user_id) or "usd"
+    return "usd"
 
 
 def currency_label(currency: str) -> str:
@@ -5267,12 +5282,7 @@ def home_keyboard(lang: str, admin: bool = False) -> types.InlineKeyboardMarkup:
     )
     keyboard.row(
         types.InlineKeyboardButton(text(lang, "topup"), callback_data="nav:topup"),
-        types.InlineKeyboardButton(
-            text(lang, "giveaway"), callback_data="nav:giveaway"
-        ),
-    )
-    keyboard.add(
-        types.InlineKeyboardButton(text(lang, "promo"), callback_data="nav:promo")
+        types.InlineKeyboardButton(text(lang, "promo"), callback_data="nav:promo"),
     )
     keyboard.add(
         types.InlineKeyboardButton(
@@ -5282,16 +5292,12 @@ def home_keyboard(lang: str, admin: bool = False) -> types.InlineKeyboardMarkup:
     keyboard.add(
         types.InlineKeyboardButton(text(lang, "about"), callback_data="nav:about")
     )
-    keyboard.add(
-        types.InlineKeyboardButton(
-            text(lang, "language"), callback_data="nav:language"
+    if admin:
+        keyboard.add(
+            types.InlineKeyboardButton(
+                "🛠 Админ-панель", callback_data="adm:home"
+            )
         )
-    )
-    keyboard.add(
-        types.InlineKeyboardButton(
-            text(lang, "currency"), callback_data="nav:currency"
-        )
-    )
     return keyboard
 
 
@@ -5337,29 +5343,6 @@ def cryptobot_keyboard(lang: str) -> types.InlineKeyboardMarkup:
         types.InlineKeyboardButton(text(lang, "home"), callback_data="nav:home")
     )
     return keyboard
-
-
-def countdown_text(lang: str, target: datetime) -> str:
-    seconds = max(0, int((target - datetime.now(timezone.utc)).total_seconds()))
-    days, remainder = divmod(seconds, 86_400)
-    hours, remainder = divmod(remainder, 3_600)
-    minutes = remainder // 60
-    if lang == "ru":
-        return f"{days} д. {hours} ч. {minutes} мин."
-    if lang == "fa":
-        return f"{days} روز، {hours} ساعت، {minutes} دقیقه"
-    return f"{days}d {hours}h {minutes}m"
-
-
-def giveaway_message(user_id: int, lang: str) -> str:
-    next_run, uses = DB.giveaway_info(user_id)
-    bonus = text(lang, "giveaway_bonus", uses=uses) if uses else ""
-    return text(
-        lang,
-        "giveaway_card",
-        countdown=countdown_text(lang, next_run),
-        bonus=bonus,
-    )
 
 
 def category_keyboard(lang: str) -> types.InlineKeyboardMarkup:
@@ -5887,27 +5870,13 @@ def topup_text(topup: dict[str, Any]) -> str:
 
 
 def send_language(chat_id: int) -> None:
-    send_visual(
-        chat_id,
-        "language",
-        "<b>Оберіть мову · Выберите язык · Choose language</b>\n"
-        "🇺🇦 Українська  ·  🇷🇺 Русский  ·  🇬🇧 English",
-        reply_markup=language_keyboard(),
-    )
+    BOT.send_message(chat_id, "✅ Язык магазина: <b>Русский</b>")
+    send_home(chat_id)
 
 
 def send_currency(chat_id: int) -> None:
-    lang = language_of(chat_id)
-    rates = currency_rates()
-    send_visual(
-        chat_id,
-        "currency",
-        text(lang, "currency_title")
-        + "\n\n"
-        + f"1 USD = <b>{rates['rub']:.2f} RUB</b>\n"
-        + '<a href="https://www.exchangerate-api.com">Rates by ExchangeRate-API</a>',
-        reply_markup=currency_keyboard(),
-    )
+    BOT.send_message(chat_id, "✅ Валюта магазина: <b>USD · $</b>")
+    send_home(chat_id)
 
 
 def send_home(chat_id: int) -> None:
@@ -5919,9 +5888,8 @@ def send_home(chat_id: int) -> None:
         f"🟢 <b>{len(ACTIVE_PRODUCT_CODES)} товаров в каталоге</b>\n"
         "⭐ Stars  ·  🔫 UC  ·  🎫 Brawl Pass\n"
         "🎮 Robux  ·  🤖 AI-подписки\n"
-        f"💱 {currency_label(display_currency)} · LIVE RATE\n\n"
-        f"{text(lang, 'min_order_caption', _currency=display_currency)}\n"
-        f"<b>{text(lang, 'giveaway')} / 48H</b>"
+        f"💵 Цены: {currency_label(display_currency)}\n\n"
+        f"{text(lang, 'min_order_caption', _currency=display_currency)}"
     )
     send_visual(
         chat_id,
@@ -6061,6 +6029,8 @@ def start(message: types.Message) -> None:
     promo_payload = parse_start_promo(message.text)
     miniapp_purchase = parse_miniapp_purchase(message.text)
     created = DB.ensure_user(message.from_user, referrer)
+    DB.set_language(message.chat.id, "ru")
+    DB.set_currency(message.chat.id, "usd")
     DB.clear_state(message.chat.id)
     if created and referrer:
         try:
@@ -6080,12 +6050,6 @@ def start(message: types.Message) -> None:
                 )
         except ApiTelegramException as exc:
             LOGGER.debug("Referral notification failed: %s", exc)
-    if not DB.language(message.chat.id):
-        send_language(message.chat.id)
-        return
-    if not DB.currency(message.chat.id):
-        send_currency(message.chat.id)
-        return
     if promo_payload:
         lang = language_of(message.chat.id)
         status, discount, code = DB.activate_promo(
@@ -6133,24 +6097,22 @@ def start(message: types.Message) -> None:
 @BOT.message_handler(commands=["language"])
 def language_command(message: types.Message) -> None:
     DB.ensure_user(message.from_user)
-    send_language(message.chat.id)
+    DB.set_language(message.chat.id, "ru")
+    BOT.send_message(message.chat.id, "✅ Доступен только русский язык.")
+    send_home(message.chat.id)
 
 
 @BOT.message_handler(commands=["currency"])
 def currency_command(message: types.Message) -> None:
     DB.ensure_user(message.from_user)
-    if not DB.language(message.chat.id):
-        send_language(message.chat.id)
-        return
-    send_currency(message.chat.id)
+    DB.set_currency(message.chat.id, "usd")
+    BOT.send_message(message.chat.id, "✅ Доступна только валюта USD · $.")
+    send_home(message.chat.id)
 
 
 @BOT.message_handler(commands=["about"])
 def about_command(message: types.Message) -> None:
     DB.ensure_user(message.from_user)
-    if not DB.language(message.chat.id):
-        send_language(message.chat.id)
-        return
     lang = language_of(message.chat.id)
     send_visual(
         message.chat.id,
@@ -6188,16 +6150,14 @@ def callbacks(call: types.CallbackQuery) -> None:
     lang = language_of(call.from_user.id)
     try:
         if data.startswith("lang:"):
-            selected = data.split(":", 1)[1]
-            DB.set_language(call.from_user.id, selected)
+            DB.set_language(call.from_user.id, "ru")
             DB.clear_state(call.from_user.id)
-            BOT.send_message(call.from_user.id, text(selected, "language_saved"))
-            send_currency(call.from_user.id)
+            BOT.send_message(call.from_user.id, "✅ Доступен только русский язык.")
+            send_home(call.from_user.id)
             return
 
         if data.startswith("cur:"):
-            selected = data.split(":", 1)[1]
-            DB.set_currency(call.from_user.id, selected)
+            DB.set_currency(call.from_user.id, "usd")
             DB.clear_state(call.from_user.id)
             lang = language_of(call.from_user.id)
             BOT.send_message(
@@ -6205,17 +6165,10 @@ def callbacks(call: types.CallbackQuery) -> None:
                 text(
                     lang,
                     "currency_saved",
-                    currency=currency_label(selected),
+                    currency=currency_label("usd"),
                 ),
             )
             send_home(call.from_user.id)
-            return
-
-        if not DB.language(call.from_user.id):
-            send_language(call.from_user.id)
-            return
-        if not DB.currency(call.from_user.id):
-            send_currency(call.from_user.id)
             return
 
         display_currency = currency_of(call.from_user.id)
@@ -6239,10 +6192,8 @@ def callbacks(call: types.CallbackQuery) -> None:
 
         if data == "nav:home":
             send_home(call.from_user.id)
-        elif data == "nav:language":
-            send_language(call.from_user.id)
-        elif data == "nav:currency":
-            send_currency(call.from_user.id)
+        elif data in {"nav:language", "nav:currency"}:
+            send_home(call.from_user.id)
         elif data == "nav:catalog":
             send_visual(
                 call.from_user.id,
@@ -6389,15 +6340,12 @@ def callbacks(call: types.CallbackQuery) -> None:
                 + text(lang, "currency")
                 + f": <b>{html.escape(currency_label(display_currency))}</b>"
             )
-            giveaway_uses = int(user.get("giveaway_discount_uses") or 0)
             value += text(
                 lang,
                 "profile_referral_bonus",
                 discount=int(user.get("referral_discount_percent") or 0),
                 maximum=MAX_TOTAL_DISCOUNT_PERCENT,
             )
-            if giveaway_uses:
-                value += text(lang, "profile_bonus", uses=giveaway_uses)
             promo_code = str(user.get("promo_code") or "")
             promo_discount = int(user.get("promo_discount_percent") or 0)
             if promo_code and promo_discount:
@@ -6480,13 +6428,6 @@ def callbacks(call: types.CallbackQuery) -> None:
                     ),
                     support=html.escape(SUPPORT_USERNAME),
                 ),
-                reply_markup=back(lang),
-            )
-        elif data == "nav:giveaway":
-            send_visual(
-                call.from_user.id,
-                "giveaway",
-                giveaway_message(call.from_user.id, lang),
                 reply_markup=back(lang),
             )
         elif data == "nav:help":
@@ -7367,10 +7308,6 @@ def stars_successful_payment(message: types.Message) -> None:
 def state_handler(message: types.Message) -> None:
     DB.ensure_user(message.from_user)
     lang = language_of(message.chat.id)
-    if not DB.currency(message.chat.id):
-        DB.clear_state(message.chat.id)
-        send_currency(message.chat.id)
-        return
     display_currency = currency_of(message.chat.id)
     state_record = DB.state(message.chat.id)
     if not state_record:
@@ -8186,30 +8123,6 @@ def order_expiration_worker() -> None:
         time.sleep(30)
 
 
-def giveaway_worker() -> None:
-    while True:
-        try:
-            winner_id = DB.run_giveaway_if_due()
-            if winner_id is not None:
-                winner_lang = language_of(winner_id)
-                try:
-                    BOT.send_message(
-                        winner_id,
-                        text(winner_lang, "giveaway_winner"),
-                        reply_markup=back(winner_lang),
-                    )
-                except ApiTelegramException as exc:
-                    LOGGER.warning("Failed to notify giveaway winner: %s", exc)
-                notify_admins(
-                    "🎁 <b>Giveaway completed</b>\n\n"
-                    f"Winner: <code>{winner_id}</code>\n"
-                    f"Prize: <b>{GIVEAWAY_DISCOUNT_PERCENT}% off the next order</b>"
-                )
-        except Exception:
-            LOGGER.exception("Giveaway worker failed")
-        time.sleep(300)
-
-
 def main() -> None:
     bot_account = BOT.get_me()
     actual_username = f"@{bot_account.username or ''}"
@@ -8218,26 +8131,10 @@ def main() -> None:
             f"BOT_TOKEN belongs to {actual_username}, expected {BOT_USERNAME}"
         )
     commands = {
-        "en": [
-            types.BotCommand("start", "Open the store"),
-            types.BotCommand("menu", "Main menu"),
-            types.BotCommand("about", "About JOULI MARKET"),
-            types.BotCommand("language", "Change language"),
-            types.BotCommand("currency", "Change currency"),
-        ],
         "ru": [
             types.BotCommand("start", "Открыть магазин"),
             types.BotCommand("menu", "Главное меню"),
             types.BotCommand("about", "О магазине JOULI MARKET"),
-            types.BotCommand("language", "Сменить язык"),
-            types.BotCommand("currency", "Сменить валюту"),
-        ],
-        "uk": [
-            types.BotCommand("start", "Відкрити магазин"),
-            types.BotCommand("menu", "Головне меню"),
-            types.BotCommand("about", "Про JOULI MARKET"),
-            types.BotCommand("language", "Змінити мову"),
-            types.BotCommand("currency", "Змінити валюту"),
         ],
     }
     for language_code in REMOVED_LANGUAGE_CODES:
@@ -8249,32 +8146,26 @@ def main() -> None:
         except Exception as exc:
             LOGGER.debug("Failed to clear %s bot localization: %s", language_code, exc)
     try:
-        BOT.set_my_commands(commands["en"])
+        BOT.set_my_commands(commands["ru"])
         BOT.set_my_commands(commands["ru"], language_code="ru")
-        BOT.set_my_commands(commands["uk"], language_code="uk")
     except Exception as exc:
         LOGGER.warning("Failed to update bot commands; polling will continue: %s", exc)
     administrator_profiles = ", ".join(
         [OWNER_USERNAME, *sorted(ADMIN_USERNAMES)]
     )
     profile_descriptions = {
-        "en": (
-            "🌿 Jouli Market: Stars, PUBG UC, Brawl Pass, Robux and AI.",
-            "Jouli Market is a green digital store for Telegram Stars, PUBG UC, Brawl Pass, Robux and AI subscriptions. Minimum order: $10. Payments: TON, USDT, SOL or balance.",
-        ),
-        "ru": (
-            "🌿 Jouli Market: Stars, PUBG UC, Brawl Pass, Robux и AI.",
+        "default": (
+            "Jouli Market: Stars, PUBG UC, Brawl Pass, Robux и AI.",
             "Jouli Market — зелёный цифровой магазин Telegram Stars, PUBG UC, Brawl Pass, Robux и AI-подписок. Минимальный заказ: $10. Оплата: TON, USDT, SOL или баланс.",
         ),
-        "uk": (
-            "🌿 Jouli Market: Stars, PUBG UC, Brawl Pass, Robux та AI.",
-            "Jouli Market — зелений цифровий магазин Telegram Stars, PUBG UC, Brawl Pass, Robux та AI-підписок. Мінімальне замовлення: $10. Оплата: TON, USDT, SOL або баланс.",
+        "ru": (
+            "Jouli Market: Stars, PUBG UC, Brawl Pass, Robux и AI.",
+            "Jouli Market — зелёный цифровой магазин Telegram Stars, PUBG UC, Brawl Pass, Robux и AI-подписок. Минимальный заказ: $10. Оплата: TON, USDT, SOL или баланс.",
         ),
     }
     try:
         BOT.set_my_name(BOT_DISPLAY_NAME)
         BOT.set_my_name(BOT_DISPLAY_NAME, language_code="ru")
-        BOT.set_my_name(BOT_DISPLAY_NAME, language_code="uk")
     except Exception as exc:
         LOGGER.warning("Failed to update bot display name: %s", exc)
     try:
@@ -8282,7 +8173,7 @@ def main() -> None:
             short_description,
             description,
         ) in profile_descriptions.items():
-            telegram_language = None if language_code == "en" else language_code
+            telegram_language = None if language_code == "default" else language_code
             BOT.set_my_short_description(
                 short_description, language_code=telegram_language
             )
@@ -8311,11 +8202,6 @@ def main() -> None:
             LOGGER.warning("Webhook removal attempt %s failed: %s", attempt, exc)
             if attempt < 3:
                 time.sleep(2)
-    threading.Thread(
-        target=giveaway_worker,
-        name="giveaway-worker",
-        daemon=True,
-    ).start()
     threading.Thread(
         target=order_expiration_worker,
         name="order-expiration-worker",
