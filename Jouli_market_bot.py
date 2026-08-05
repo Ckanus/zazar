@@ -44,7 +44,7 @@ load_dotenv()
 SHOP_NAME = "Jouli Market"
 BOT_DISPLAY_NAME = "Jouli Market"
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-bot_username_value = "@Joulimarket_bot"
+bot_username_value = "@Sugarwymarket_bot"
 BOT_USERNAME = (
     bot_username_value
     if bot_username_value.startswith("@")
