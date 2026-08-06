@@ -2033,8 +2033,15 @@ DISCOUNT_LABELS = {
 
 
 def text(lang: str, key: str, **values: Any) -> str:
-    selected = lang if lang in LANGUAGES else "en"
-    template = TEXTS.get(selected, {}).get(key, TEXTS["en"][key])
+    selected = lang if lang in LANGUAGES else "ru"
+    template = TEXTS.get(selected, {}).get(key)
+    if template is None:
+        template = TEXTS.get("ru", {}).get(key)
+    if template is None:
+        template = TEXTS.get("en", {}).get(key)
+    if template is None:
+        LOGGER.warning("Missing interface text key: %s", key)
+        template = key.replace("_", " ").capitalize()
     display_currency = str(values.pop("_currency", "usd")).lower()
     if display_currency not in CURRENCIES:
         display_currency = "usd"
@@ -5331,28 +5338,28 @@ def cryptobot_keyboard(lang: str) -> types.InlineKeyboardMarkup:
 def category_keyboard(lang: str) -> types.InlineKeyboardMarkup:
     keyboard = types.InlineKeyboardMarkup()
     keyboard.row(
-        types.InlineKeyboardButton(text(lang, "cat_stars"), callback_data="cat:stars"),
-        types.InlineKeyboardButton(text(lang, "cat_brawl"), callback_data="cat:brawl"),
+        types.InlineKeyboardButton("Telegram Stars", callback_data="cat:stars"),
+        types.InlineKeyboardButton("Brawl Pass", callback_data="cat:brawl"),
     )
     keyboard.row(
-        types.InlineKeyboardButton(text(lang, "cat_pubg"), callback_data="cat:pubg"),
-        types.InlineKeyboardButton(text(lang, "cat_ai"), callback_data="cat:ai"),
+        types.InlineKeyboardButton("PUBG UC", callback_data="cat:pubg"),
+        types.InlineKeyboardButton("Подписки на ИИ", callback_data="cat:ai"),
     )
     keyboard.row(
         types.InlineKeyboardButton(
-            text(lang, "cat_robux_account"), callback_data="cat:robux_account"
+            "Robux аккаунтом", callback_data="cat:robux_account"
         ),
         types.InlineKeyboardButton(
-            text(lang, "cat_robux_gamepass"), callback_data="cat:robux_gamepass"
+            "Robux GamePass", callback_data="cat:robux_gamepass"
         ),
     )
     keyboard.row(
         types.InlineKeyboardButton(
-            text(lang, "cat_robux_group"), callback_data="cat:robux_group"
+            "Robux группой", callback_data="cat:robux_group"
         ),
     )
     keyboard.add(
-        types.InlineKeyboardButton(text(lang, "home"), callback_data="nav:home")
+        types.InlineKeyboardButton("Главное меню", callback_data="nav:home")
     )
     return keyboard
 
