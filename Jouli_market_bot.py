@@ -5264,39 +5264,22 @@ def currency_keyboard() -> types.InlineKeyboardMarkup:
 
 def home_keyboard(lang: str, admin: bool = False) -> types.InlineKeyboardMarkup:
     keyboard = types.InlineKeyboardMarkup()
-    if WEBAPP_URL:
-        keyboard.add(
-            types.InlineKeyboardButton(
-                "🌿 OPEN JOULI MARKET",
-                web_app=types.WebAppInfo(WEBAPP_URL),
-            )
-        )
-    keyboard.add(
-        types.InlineKeyboardButton(
-            f"▰ {text(lang, 'catalog').upper()}", callback_data="nav:catalog"
-        )
+    keyboard.add(types.InlineKeyboardButton("Каталог", callback_data="nav:catalog"))
+    keyboard.row(
+        types.InlineKeyboardButton("Мои заказы", callback_data="nav:orders"),
+        types.InlineKeyboardButton("Профиль", callback_data="nav:profile"),
     )
     keyboard.row(
-        types.InlineKeyboardButton(text(lang, "orders"), callback_data="nav:orders"),
-        types.InlineKeyboardButton(text(lang, "profile"), callback_data="nav:profile"),
-    )
-    keyboard.row(
-        types.InlineKeyboardButton(text(lang, "topup"), callback_data="nav:topup"),
-        types.InlineKeyboardButton(text(lang, "promo"), callback_data="nav:promo"),
+        types.InlineKeyboardButton("Пополнить баланс", callback_data="nav:topup"),
+        types.InlineKeyboardButton("Промокод", callback_data="nav:promo"),
     )
     keyboard.add(
-        types.InlineKeyboardButton(
-            text(lang, "suggestion"), callback_data="nav:suggestion"
-        )
+        types.InlineKeyboardButton("Предложить товар", callback_data="nav:suggestion")
     )
-    keyboard.add(
-        types.InlineKeyboardButton(text(lang, "about"), callback_data="nav:about")
-    )
+    keyboard.add(types.InlineKeyboardButton("О магазине", callback_data="nav:about"))
     if admin:
         keyboard.add(
-            types.InlineKeyboardButton(
-                "🛠 Админ-панель", callback_data="adm:home"
-            )
+            types.InlineKeyboardButton("Админ-панель", callback_data="adm:home")
         )
     return keyboard
 
@@ -5880,22 +5863,26 @@ def send_currency(chat_id: int) -> None:
 
 
 def send_home(chat_id: int) -> None:
-    lang = language_of(chat_id)
-    display_currency = currency_of(chat_id)
     caption = (
-        "<b>🌿 Jouli Market</b>\n"
-        f"<blockquote>{text(lang, 'home_tagline')}</blockquote>\n"
-        f"🟢 <b>{len(ACTIVE_PRODUCT_CODES)} товаров в каталоге</b>\n"
-        "⭐ Stars  ·  🔫 UC  ·  🎫 Brawl Pass\n"
-        "🎮 Robux  ·  🤖 AI-подписки\n"
-        f"💵 Цены: {currency_label(display_currency)}\n\n"
-        f"{text(lang, 'min_order_caption', _currency=display_currency)}"
+        "<b>Jouli Market</b>\n\n"
+        "Цифровые товары с удобным оформлением заказа.\n"
+        f"В каталоге: <b>{len(ACTIVE_PRODUCT_CODES)} товаров</b>.\n"
+        "Валюта: <b>USD</b>.\n"
+        "Минимальный заказ и пополнение: <b>$10</b>.\n\n"
+        "Выберите нужный раздел:"
     )
-    send_visual(
+    BOT.send_message(
         chat_id,
-        "welcome",
         caption,
-        reply_markup=home_keyboard(lang, is_admin_user_id(chat_id)),
+        reply_markup=home_keyboard("ru", is_admin_user_id(chat_id)),
+    )
+
+
+def send_catalog(chat_id: int) -> None:
+    BOT.send_message(
+        chat_id,
+        "<b>Каталог Jouli Market</b>\n\nВыберите категорию товаров:",
+        reply_markup=category_keyboard("ru"),
     )
 
 
@@ -6025,73 +6012,90 @@ def send_admin_dashboard(chat_id: int) -> None:
 
 @BOT.message_handler(commands=["start", "menu"])
 def start(message: types.Message) -> None:
-    referrer = parse_referrer(message.text)
-    promo_payload = parse_start_promo(message.text)
-    miniapp_purchase = parse_miniapp_purchase(message.text)
-    created = DB.ensure_user(message.from_user, referrer)
-    DB.set_language(message.chat.id, "ru")
-    DB.set_currency(message.chat.id, "usd")
-    DB.clear_state(message.chat.id)
-    if created and referrer:
-        try:
-            referrer_user = DB.user(referrer)
-            if referrer_user:
-                referrer_lang = language_of(referrer)
-                BOT.send_message(
-                    referrer,
-                    text(referrer_lang, "referral_joined")
-                    + "\n"
-                    + text(
-                        referrer_lang,
-                        "referral_bonus_line",
-                        bonus=REFERRAL_DISCOUNT_PERCENT,
-                        discount=DB.effective_discount(referrer_user),
-                    ),
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+    raw_command = (message.text or "").strip()
+    command_name = raw_command.split(maxsplit=1)[0].split("@", 1)[0].lower()
+    try:
+        referrer = parse_referrer(raw_command) if command_name == "/start" else None
+        created = DB.ensure_user(message.from_user, referrer)
+        DB.clear_state(user_id)
+
+        if command_name == "/menu" or len(raw_command.split(maxsplit=1)) == 1:
+            send_home(chat_id)
+            return
+
+        if created and referrer:
+            try:
+                referrer_user = DB.user(referrer)
+                if referrer_user:
+                    BOT.send_message(
+                        referrer,
+                        text("ru", "referral_joined")
+                        + "\n"
+                        + text(
+                            "ru",
+                            "referral_bonus_line",
+                            bonus=REFERRAL_DISCOUNT_PERCENT,
+                            discount=DB.effective_discount(referrer_user),
+                        ),
+                    )
+            except ApiTelegramException as exc:
+                LOGGER.debug("Referral notification failed: %s", exc)
+
+        promo_payload = parse_start_promo(raw_command)
+        if promo_payload:
+            status, discount, code = DB.activate_promo(user_id, promo_payload)
+            key = {
+                "activated": "promo_activated",
+                "invalid": "promo_invalid",
+                "used": "promo_used",
+                "active": "promo_active",
+            }[status]
+            BOT.send_message(
+                chat_id,
+                text("ru", key, code=html.escape(code), discount=discount),
+                reply_markup=profile_keyboard("ru"),
+            )
+            return
+
+        miniapp_purchase = parse_miniapp_purchase(raw_command)
+        if miniapp_purchase:
+            product, quantity = miniapp_purchase
+            DB.set_state(
+                user_id,
+                "recipient",
+                {"product": product.code, "quantity": quantity},
+            )
+            BOT.send_message(
+                chat_id,
+                "<b>Оформление заказа: "
+                + html.escape(product.title("ru"))
+                + "</b>\n"
+                + f"Количество: <b>{quantity:,}</b>\n"
+                + "Сумма до скидок: <b>"
+                + format_usd_cents(
+                    product_total_usd_cents(product, quantity), "usd"
                 )
-        except ApiTelegramException as exc:
-            LOGGER.debug("Referral notification failed: %s", exc)
-    if promo_payload:
-        lang = language_of(message.chat.id)
-        status, discount, code = DB.activate_promo(
-            message.from_user.id, promo_payload
-        )
-        key = {
-            "activated": "promo_activated",
-            "invalid": "promo_invalid",
-            "used": "promo_used",
-            "active": "promo_active",
-        }[status]
+                + "</b>\n\n"
+                + recipient_prompt("ru", product),
+            )
+            return
+
+        send_home(chat_id)
+    except Exception as exc:
+        LOGGER.exception("Failed to open menu for user %s: %s", user_id, exc)
         BOT.send_message(
-            message.chat.id,
-            text(
-                lang,
-                key,
-                code=html.escape(code),
-                discount=discount,
-            ),
-            reply_markup=profile_keyboard(lang),
+            chat_id,
+            "<b>Jouli Market</b>\n\nМеню временно не загрузилось. Повторите /menu.",
         )
-        return
-    if miniapp_purchase:
-        product, quantity = miniapp_purchase
-        DB.set_state(
-            message.chat.id,
-            "recipient",
-            {"product": product.code, "quantity": quantity},
-        )
-        lang = language_of(message.chat.id)
-        display_currency = currency_of(message.chat.id)
-        BOT.send_message(
-            message.chat.id,
-            "<b>🛍 Mini App · "
-            + html.escape(product.title(lang))
-            + "</b>\n"
-            + f"Количество: <b>{quantity:,}</b>\n"
-            + f"Сумма до скидок: <b>{format_usd_cents(product_total_usd_cents(product, quantity), display_currency)}</b>\n\n"
-            + recipient_prompt(lang, product),
-        )
-        return
-    send_home(message.chat.id)
+
+
+@BOT.message_handler(commands=["catalog"])
+def catalog_command(message: types.Message) -> None:
+    DB.ensure_user(message.from_user)
+    DB.clear_state(message.from_user.id)
+    send_catalog(message.chat.id)
 
 
 @BOT.message_handler(commands=["language"])
@@ -6195,22 +6199,7 @@ def callbacks(call: types.CallbackQuery) -> None:
         elif data in {"nav:language", "nav:currency"}:
             send_home(call.from_user.id)
         elif data == "nav:catalog":
-            send_visual(
-                call.from_user.id,
-                "catalog",
-                "🟢 "
-                + text(lang, "catalog_title", _currency=display_currency)
-                + "\n\n"
-                + text(
-                    lang,
-                    "wholesale_notice",
-                    discount=WHOLESALE_DISCOUNT_PERCENT,
-                    minimum=format_usd_cents(
-                        WHOLESALE_MIN_USD_CENTS, display_currency
-                    ),
-                ),
-                reply_markup=category_keyboard(lang),
-            )
+            send_catalog(call.from_user.id)
         elif data.startswith("cat:"):
             category = data.split(":", 1)[1]
             if category not in CATEGORIES:
@@ -8134,6 +8123,7 @@ def main() -> None:
         "ru": [
             types.BotCommand("start", "Открыть магазин"),
             types.BotCommand("menu", "Главное меню"),
+            types.BotCommand("catalog", "Открыть каталог"),
             types.BotCommand("about", "О магазине JOULI MARKET"),
         ],
     }
